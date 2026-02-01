@@ -39,7 +39,7 @@ def start_handler(message):
     user_id = message.from_user.id
     text = message.text.split()
 
-    # User entry via Deep Link (e.g., t.me/bot?start=-100123)
+    # User entry via Deep Link
     if len(text) > 1:
         try:
             ch_id = int(text[1])
@@ -48,25 +48,49 @@ def start_handler(message):
                 markup = InlineKeyboardMarkup()
                 # Display Dynamic Plans
                 for p_time, p_price in ch_data['plans'].items():
-                    label = f"{p_time} Min" if int(p_time) < 60 else f"{int(p_time)//1440} Din"
+                    label = f"{p_time} Min" if int(p_time) < 60 else f"{int(p_time)//1440} Days"
                     markup.add(InlineKeyboardButton(f"💳 {label} - ₹{p_price}", callback_data=f"select_{ch_id}_{p_time}"))
                 
                 markup.add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
                 bot.send_message(message.chat.id, 
-                    f"Swaagat hai!\n\nChannel: *{ch_data['name']}*\n\nNiche se apna subscription plan chunein:", 
+                    f"Welcome!\n\nYou are joining: *{ch_data['name']}*.\n\nPlease select a subscription plan below:", 
                     reply_markup=markup, parse_mode="Markdown")
                 return
         except: pass
 
     # Admin Panel Greeting
     if user_id == ADMIN_ID:
-        bot.send_message(message.chat.id, "✅ Admin Panel Active!\n\n/add - Add or Edit Channel/Prices\n/channels - List all channels")
+        bot.send_message(message.chat.id, "✅ Admin Panel Active!\n\n/add - Add/Edit Channel & Prices\n/channels - Manage Existing Channels")
     else:
-        bot.send_message(message.chat.id, "Swaagat hai! Join karne ke liye admin ke link par click karein.")
+        bot.send_message(message.chat.id, "Welcome! To join a channel, please use the link provided by the Admin.")
+
+@bot.message_handler(commands=['channels'], func=lambda m: m.from_user.id == ADMIN_ID)
+def list_channels(message):
+    markup = InlineKeyboardMarkup()
+    # Fetch all channels managed by this admin
+    cursor = channels_col.find({"admin_id": ADMIN_ID})
+    count = 0
+    for ch in cursor:
+        markup.add(InlineKeyboardButton(f"Channel: {ch['name']}", callback_data=f"manage_{ch['channel_id']}"))
+        count += 1
+    
+    markup.add(InlineKeyboardButton("➕ Add New Channel", callback_data="add_new"))
+    
+    if count == 0:
+        bot.send_message(ADMIN_ID, "No channels found. Click below to add one.", reply_markup=markup)
+    else:
+        bot.send_message(ADMIN_ID, "Your Managed Channels:", reply_markup=markup)
 
 @bot.message_handler(commands=['add'], func=lambda m: m.from_user.id == ADMIN_ID)
 def add_channel_start(message):
-    msg = bot.send_message(ADMIN_ID, "Bot ko channel me admin banayein, phir channel ka koi bhi message yahan FORWARD karein.")
+    msg = bot.send_message(ADMIN_ID, "Please ensure the bot is an Admin in your channel, then FORWARD any message from that channel here.")
+    bot.register_next_step_handler(msg, get_plans)
+
+# Callback for Add New button
+@bot.callback_query_handler(func=lambda call: call.data == "add_new")
+def cb_add_new(call):
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(ADMIN_ID, "Please FORWARD any message from your channel here.")
     bot.register_next_step_handler(msg, get_plans)
 
 def get_plans(message):
@@ -74,11 +98,11 @@ def get_plans(message):
         ch_id = message.forward_from_chat.id
         ch_name = message.forward_from_chat.title
         msg = bot.send_message(ADMIN_ID, 
-            f"Channel: *{ch_name}* mil gaya.\n\nAb plans likhein (Minutes:Price):\n`Min:Price, Min:Price` \n\n"
-            "Example:\n`1:5, 43200:199`", parse_mode="Markdown")
+            f"Channel Detected: *{ch_name}*\n\nEnter plans in format (Minutes:Price):\n`Min:Price, Min:Price` \n\n"
+            "Example:\n`1440:99, 43200:199` (1 Day and 30 Days)", parse_mode="Markdown")
         bot.register_next_step_handler(msg, finalize_channel, ch_id, ch_name)
     else:
-        bot.send_message(ADMIN_ID, "❌ Error: Message forward nahi kiya gaya. Dubara /add karein.")
+        bot.send_message(ADMIN_ID, "❌ Error: Message was not forwarded. Use /add to try again.")
 
 def finalize_channel(message, ch_id, ch_name):
     try:
@@ -90,9 +114,9 @@ def finalize_channel(message, ch_id, ch_name):
         
         channels_col.update_one({"channel_id": ch_id}, {"$set": {"name": ch_name, "plans": plans_dict, "admin_id": ADMIN_ID}}, upsert=True)
         bot_username = bot.get_me().username
-        bot.send_message(ADMIN_ID, f"✅ Setup Successful!\n\nLink:\n`https://t.me/{bot_username}?start={ch_id}`", parse_mode="Markdown")
+        bot.send_message(ADMIN_ID, f"✅ Setup Successful!\n\nInvite Link for users:\n`https://t.me/{bot_username}?start={ch_id}`", parse_mode="Markdown")
     except:
-        bot.send_message(ADMIN_ID, "❌ Format galat hai! Dubara /add karein.")
+        bot.send_message(ADMIN_ID, "❌ Invalid format. Please use `Min:Price, Min:Price`. Use /add to retry.")
 
 # --- USER: PAYMENT FLOW ---
 
@@ -105,11 +129,11 @@ def user_pays(call):
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa={UPI_ID}%26am={price}%26cu=INR"
     
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("✅ I Have Paid (Verify)", callback_data=f"paid_{ch_id}_{mins}"))
+    markup.add(InlineKeyboardButton("✅ I Have Paid", callback_data=f"paid_{ch_id}_{mins}"))
     markup.add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
     
     bot.send_photo(call.message.chat.id, qr_url, 
-                   caption=f"Plan: {mins} Minutes\nAmount: ₹{price}\nUPI: `{UPI_ID}`\n\nPayment ke baad niche 'I Have Paid' dabayein.", 
+                   caption=f"Plan: {mins} Minutes\nPrice: ₹{price}\nUPI ID: `{UPI_ID}`\n\nPlease complete the payment and click 'I Have Paid'.", 
                    reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('paid_'))
@@ -123,13 +147,13 @@ def admin_notify(call):
     markup.add(InlineKeyboardButton("✅ Approve", callback_data=f"app_{user.id}_{ch_id}_{mins}"))
     markup.add(InlineKeyboardButton("❌ Reject", callback_data=f"rej_{user.id}"))
     
-    bot.send_message(ADMIN_ID, f"🔔 *Payment Alert!*\n\nUser: {user.first_name}\nChannel: {ch_data['name']}\nPlan: {mins} Mins\nPrice: ₹{price}", 
+    bot.send_message(ADMIN_ID, f"🔔 *Payment Verification Required!*\n\nUser: {user.first_name}\nChannel: {ch_data['name']}\nPlan: {mins} Mins\nPrice: ₹{price}", 
                      reply_markup=markup, parse_mode="Markdown")
     
     u_markup = InlineKeyboardMarkup().add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
-    bot.send_message(call.message.chat.id, "✅ Payment request bhej di gayi hai. Admin verify karke link bhej raha hai.", reply_markup=u_markup)
+    bot.send_message(call.message.chat.id, "✅ Your payment request has been sent. Please wait for Admin approval.", reply_markup=u_markup)
 
-# --- APPROVAL & EXPIRY LOGIC ---
+# --- APPROVAL & EXPIRY ---
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('app_'))
 def approve_now(call):
@@ -140,18 +164,28 @@ def approve_now(call):
         expiry_datetime = datetime.now() + timedelta(minutes=mins)
         expiry_ts = int(expiry_datetime.timestamp())
 
-        # Link also expires with subscription
+        # Link expires when sub ends
         link = bot.create_chat_invite_link(ch_id, member_limit=1, expire_date=expiry_ts)
         
         users_col.update_one({"user_id": u_id, "channel_id": ch_id}, {"$set": {"expiry": expiry_datetime.timestamp()}}, upsert=True)
         
-        bot.send_message(u_id, f"🥳 *Payment Approved!*\n\nSubscription: {mins} Minutes\n\nJoin Link: {link.invite_link}\n\n⚠️ Note: Ye link aur access {mins} minute baad khatam ho jayega.", parse_mode="Markdown")
-        bot.edit_message_text(f"✅ Approved {u_id} for {mins} mins.", call.message.chat.id, call.message.message_id)
+        bot.send_message(u_id, f"🥳 *Payment Approved!*\n\nSubscription: {mins} Minutes\n\nJoin Link: {link.invite_link}\n\n⚠️ Note: This link and your access will expire in {mins} minutes.", parse_mode="Markdown")
+        bot.edit_message_text(f"✅ Approved user {u_id} for {mins} mins.", call.message.chat.id, call.message.message_id)
         
     except Exception as e:
         bot.send_message(ADMIN_ID, f"❌ Error: {e}")
 
-# Automate Kicking & Rejoin Button Fix
+@bot.callback_query_handler(func=lambda call: call.data.startswith('manage_'))
+def manage_ch(call):
+    ch_id = int(call.data.split('_')[1])
+    ch_data = channels_col.find_one({"channel_id": ch_id})
+    bot_username = bot.get_me().username
+    link = f"https://t.me/{bot_username}?start={ch_id}"
+    
+    bot.edit_message_text(f"Settings for: *{ch_data['name']}*\n\nYour Link: `{link}`\n\nTo edit prices, use /add and forward a message from this channel again.", 
+                          call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+
+# Automate Kicking
 def kick_expired_users():
     now = datetime.now().timestamp()
     expired_users = users_col.find({"expiry": {"$lte": now}})
@@ -162,11 +196,10 @@ def kick_expired_users():
             bot.ban_chat_member(user['channel_id'], user['user_id'])
             bot.unban_chat_member(user['channel_id'], user['user_id'])
             
-            # Deep Link to show plans again
             rejoin_url = f"https://t.me/{bot_username}?start={user['channel_id']}"
-            markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔄 Dobara Join Karein / Renew", url=rejoin_url))
+            markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔄 Re-join / Renew", url=rejoin_url))
             
-            bot.send_message(user['user_id'], "⚠️ Aapka subscription khatam ho gaya hai. Dobara join karne ke liye niche click karein.", reply_markup=markup)
+            bot.send_message(user['user_id'], "⚠️ Your subscription has expired.\n\nTo join again or renew, please click the button below:", reply_markup=markup)
             users_col.delete_one({"_id": user['_id']})
         except: pass
 
